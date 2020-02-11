@@ -11,7 +11,7 @@ Setup basic environment via Conda:
     conda install pytorch torchvision -c pytorch
     
     # tslearn
-    pip install tslearn
+    conda install -c conda-forge tslearn
     
     # dmd
     pip install pydmd
