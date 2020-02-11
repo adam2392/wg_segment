@@ -3,6 +3,10 @@ wg_segment
 
 A set of research and models for white/gray matter segmentation using only LFP signals.
 
+Stick raw BIDS data into `data/raw`. If we do any feature engineering, ideally stick into `data/interim`.
+
+Any output in terms of figures after model evaluation,  stick into `reports/`
+
 Project Organization
 ------------
 
