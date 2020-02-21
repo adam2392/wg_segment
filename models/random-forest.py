@@ -217,17 +217,14 @@ def get_averaged_data(raw: mne.io.Raw, ch_labels: Dict):
     # get the channel numbers for each electrode
     elec_to_channels = collections.defaultdict(list)
     for x in ch_names:
-        groups = re.match("^([A-Za-z]+[']?)([0-9]+)$", x).groups()
-        if groups is None:
-            continue
-        elec, num = groups
+        elec, num = re.match("^([A-Za-z]+[']?)([0-9]+)$", x).groups()
         elec_to_channels[elec].append(elec + str(num))
 
     X = None
     y = None
 
     for elec in elec_to_channels:
-        chans_list = list(elec_to_channels[elec].keys())
+        chans_list = elec_to_channels[elec]
         
         labels = [ch_labels[ch] for ch in chans_list]
         labels = np.array(labels)
@@ -237,7 +234,7 @@ def get_averaged_data(raw: mne.io.Raw, ch_labels: Dict):
         avg_signal = np.mean(elec_data, axis=0)
         centered_data = elec_data - avg_signal
         
-        if not (X or y):
+        if (X is None) or (y is None):
             X = centered_data
             y = labels
         else:
@@ -267,26 +264,10 @@ def get_data_from_raw(
 
         if status == "bad" and descrip == "white matter":    
             ch_labels[name] = 1
-        else:
+        elif name in ch_names:
             ch_labels[name] = 0
 
-    # TODO: implement this!
-    # if reference == 'bipolar':
-    #     # bipolar reference the data
-
-    #     # find anodes/cathodes
-    #     cathodes, anodes = 
-    #     # use MNE to re-reference
-    #     mne.set_bipolar_reference()
-    # elif reference == 'average':
-    #     # apply cavg referencing
-
-    # wm_chs = [elec_descrip["name"][i]
-    #           for i in range(len(elec_descrip["status_description"]))
-    #           if elec_descrip["status"][i] == "bad"
-    #           and elec_descrip["status_description"][i] == "white matter"]
-    # wm_inds = mne.pick_channels(raw.info["ch_names"], wm_chs)
-    # gm_inds = mne.pick_channels(raw.info["ch_names"], [], exclude=wm_chs)
+    # TODO: test bipolar and averaged are correct
 
     if reference == "monopolar":
         X, y = get_monopolar_data(raw, ch_labels)
@@ -295,7 +276,7 @@ def get_data_from_raw(
         anode, cathode, mono = find_bipolar_reference(ch_names)
         X, y = get_bipolar_data(raw, ch_labels, anode, cathode, mono)
 
-    elif reference == "average":
+    elif reference == "averaged":
         X, y = get_averaged_data(raw, ch_labels)
     
     else:
@@ -361,7 +342,7 @@ def generate_roc_curve(
         )
 
     ax.set(
-        title="ROC Curves for Random Forest Variants",
+        title=f"ROC Curves for Random Forest Variants with {reference} Data",
         xlabel="False Positive Rate",
         ylabel="True Positive Rate")
 
@@ -534,7 +515,7 @@ if __name__ == "__main__":
 
     # Data processing
     window_size = 10  # in seconds
-    reference = "average"
+    reference = "averaged"
 
     X, y = get_data_from_raw(
         raw,
