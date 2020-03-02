@@ -3,8 +3,6 @@ import os
 import re
 import sys
 
-sys.path.append("../..")
-
 import numpy as np
 import mne
 
@@ -19,9 +17,20 @@ from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split, GridSearchCV
 from typing import Dict, List, Union
 
-from random_forest_visualization import generate_roc_curve, generate_precision_recall_curve
+# sys.path.append("/Users/ChesterHuynh/research/seeg localization/")
+sys.path.append("/workspaces/ChesterHuynh/research/seeg localization/")
+
+from random_forest_visualization import (
+    generate_roc_curve,
+    generate_precision_recall_curve,
+)
 from mne_bids.utils import print_dir_tree, _parse_bids_filename
-from mne_bids import write_raw_bids, read_raw_bids, make_bids_basename, make_bids_folders
+from mne_bids import (
+    write_raw_bids,
+    read_raw_bids,
+    make_bids_basename,
+    make_bids_folders,
+)
 from mne_bids.tsv_handler import _from_tsv, _to_tsv
 
 from sample_scripts import file_utils
@@ -61,9 +70,7 @@ def load_elecs_data(elecfile: Union[str, Path]):
                 elif len(row) == 6:
                     eleccoords_mm[row[1]] = np.array(list(map(float, row[2:5])))
                 else:
-                    raise ValueError(
-                        "Unrecognized electrode coordinate text format"
-                    )
+                    raise ValueError("Unrecognized electrode coordinate text format")
     else:
         matreader = MatReader()
         data = matreader.loadmat(elecfile)
@@ -75,7 +82,7 @@ def load_elecs_data(elecfile: Union[str, Path]):
         for i in range(len(eleclabels)):
             eleccoords_mm[eleclabels[i][0].strip()] = elecmatrix[i]
 
-    print(f'Electrode labels: {eleccoords_mm.keys()}')
+    print(f"Electrode labels: {eleccoords_mm.keys()}")
 
     return eleccoords_mm
 
@@ -87,9 +94,22 @@ def make_seeg_montage_edf(subject: str, edf_fpath: str, elecs_fpath: str):
     missing_chs = []
 
     if subject == "la03":
-        missing_chs = ["Y16", "R'1", "R'2", "R'3", "R'4",
-                       "R'5", "R'6", "R'7", "R'8", "R'9",
-                       "X'1", "X'2", "X'9", "X'10"]  # for la03
+        missing_chs = [
+            "Y16",
+            "R'1",
+            "R'2",
+            "R'3",
+            "R'4",
+            "R'5",
+            "R'6",
+            "R'7",
+            "R'8",
+            "R'9",
+            "X'1",
+            "X'2",
+            "X'9",
+            "X'10",
+        ]  # for la03
 
     # Read .edf file into mne Raw object
     raw = io.read_raw_edf(edf_fpath, preload=True, verbose=False)
@@ -146,7 +166,7 @@ def find_bipolar_reference(ch_names):
         n = len(ch_list)
         ch_list = np.array(ch_list)
 
-        for (ch_num0, ch_num1) in zip(ch_list[0:n-1], ch_list[1:n]):
+        for (ch_num0, ch_num1) in zip(ch_list[0 : n - 1], ch_list[1:n]):
 
             if int(ch_num0) == int(ch_num1) - 1:
 
@@ -174,12 +194,7 @@ def get_monopolar_data(raw, ch_labels):
 
 
 def get_bipolar_data(
-    raw,
-    ch_labels,
-    anode,
-    cathode,
-    monopolar=[],
-    include_monopolar=True
+    raw, ch_labels, anode, cathode, monopolar=[], include_monopolar=True
 ):
     """
     Construct signal time series by subtracting adjacent channel signals.
@@ -263,7 +278,7 @@ def get_data_from_raw(
     strided: bool = True,
     reference: str = "monopolar",
     *args,
-    **kwargs
+    **kwargs,
 ):
     """
     Get time series data and corresponding white matter/grey matter labels
@@ -314,18 +329,14 @@ def get_data_from_raw(
         X = X[:, start:stop]
     else:
         m, n = X.shape
-        start = np.random.randint(
-            low=0,
-            high=raw.n_times-n_samples+1,
-            size=m
-        )
+        start = np.random.randint(low=0, high=raw.n_times - n_samples + 1, size=m)
         stop = start + n_samples
 
         # Get random time windows for each row
         strided = np.lib.stride_tricks.as_strided
         s0, s1 = X.strides
         windows = strided(
-            X, shape=(m, n-n_samples+1, n_samples), strides=(s0, s1, s1)
+            X, shape=(m, n - n_samples + 1, n_samples), strides=(s0, s1, s1)
         )
 
         X = windows[np.arange(len(start)), start]
@@ -340,7 +351,7 @@ def train_classifiers(
     y_train: np.ndarray,
     classifier_names: List[str],
     *args,
-    **kwargs
+    **kwargs,
 ):
     """
     Train each classifier.
@@ -366,7 +377,7 @@ def train_classifiers(
                 image_height=1,
                 image_width=n_samples,
                 patch_height_max=1,
-                patch_height_min=1
+                patch_height_min=1,
             )
 
         if clf is not None:
@@ -381,10 +392,7 @@ def train_classifiers(
 
 
 def predict_classifiers(
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-    classifiers: Dict,
-    verbose=True
+    X_test: np.ndarray, y_test: np.ndarray, classifiers: Dict, verbose=True
 ) -> List[np.ndarray]:
     """
     Predict and evaluate accuracy for each classifier.
@@ -423,25 +431,18 @@ def evaluate_classifiers(
     y_test: np.ndarray,
     classifier_names: List[str],
     window_size=10,
-    sfreq=2000
+    sfreq=2000,
 ):
     """
     Wrapper method that calls train and predict. Evaluates
     classifiers with accuracy.
     """
     fitted_clfs = train_classifiers(
-        X_train,
-        y_train,
-        classifier_names,
-        window_size=window_size,
-        sfreq=sfreq
+        X_train, y_train, classifier_names, window_size=window_size, sfreq=sfreq
     )
 
     predictions, prediction_probs = predict_classifiers(
-        X_test,
-        y_test,
-        fitted_clfs,
-        verbose=True
+        X_test, y_test, fitted_clfs, verbose=True
     )
 
     return predictions, prediction_probs
@@ -463,9 +464,7 @@ if __name__ == "__main__":
 
     pat_dir = os.path.join(bids_root, f"sub-{patid}")
     derivatives_meta_dir = os.path.join(derivatives, f"ses-{ses}", "ieeg")
-    elec_meta_dir = os.path.join(
-        bids_root, f"sub-{patid}", f"ses-{ses}", "ieeg"
-    )
+    elec_meta_dir = os.path.join(bids_root, f"sub-{patid}", f"ses-{ses}", "ieeg")
 
     edf_dir = os.path.join(sourcedata, acq, "edf")
     fif_dir = os.path.join(sourcedata, acq, "fif")
@@ -483,7 +482,7 @@ if __name__ == "__main__":
         task=task,
         acquisition=acq,
         run=run,
-        suffix="channels.tsv"
+        suffix="channels.tsv",
     )
 
     elec_descrip_fpath = os.path.join(elec_meta_dir, elec_descrip_fname)
@@ -507,18 +506,20 @@ if __name__ == "__main__":
                 strided=True,
                 reference=reference,
                 by_electrode=False,
-                include_monopolar=False
+                include_monopolar=False,
             )
 
             # Split dataset into training set and test set
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.35)
             classifier_names = ["Random Forest", "RerF", "SPORF"]
             predictions, prediction_probs = evaluate_classifiers(
-                X_train, y_train,
-                X_test, y_test,
+                X_train,
+                y_train,
+                X_test,
+                y_test,
                 classifier_names,
                 window_size=window_size,
-                sfreq=raw.info["sfreq"]
+                sfreq=raw.info["sfreq"],
             )
 
             fig_dir = f"/workspaces/ChesterHuynh/research/seeg localization/figs/{window_size}sec/"
@@ -526,17 +527,9 @@ if __name__ == "__main__":
             classifier_names = ["Zero"] + classifier_names
 
             fprs, tprs = generate_roc_curve(
-                y_test,
-                classifier_names,
-                prediction_probs,
-                fig_dir,
-                reference
+                y_test, classifier_names, prediction_probs, fig_dir, reference
             )
 
             precisions, recalls = generate_precision_recall_curve(
-                y_test,
-                classifier_names,
-                prediction_probs,
-                fig_dir,
-                reference
+                y_test, classifier_names, prediction_probs, fig_dir, reference
             )

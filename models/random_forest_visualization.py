@@ -3,16 +3,11 @@ import os
 import seaborn as sns
 
 from matplotlib import pyplot as plt
-from sklearn.metrics import precision_recall_curve, roc_auc_score, roc_curve
+from sklearn.metrics import auc, precision_recall_curve, roc_auc_score, roc_curve
 
 
 def generate_roc_curve(
-    y_test,
-    classifier_names,
-    prediction_probs,
-    fig_dir,
-    reference,
-    verbose=True
+    y_test, classifier_names, prediction_probs, fig_dir, reference, verbose=True
 ):
     """
     Plot ROC curves and report accompanying AUC.
@@ -34,17 +29,14 @@ def generate_roc_curve(
         tprs.append(tpr)
 
         sns.lineplot(
-            x=fpr,
-            y=tpr,
-            label=f"{name} ROC curve (area = {auc:.3f})",
-            ci=None,
-            ax=ax
+            x=fpr, y=tpr, label=f"{name} ROC curve (area = {auc:.3f})", ci=None, ax=ax
         )
 
     ax.set(
         title=f"ROC Curves for Random Forest Variants with {reference.capitalize()} Data",
         xlabel="False Positive Rate",
-        ylabel="True Positive Rate")
+        ylabel="True Positive Rate",
+    )
 
     fig.tight_layout()
 
@@ -58,12 +50,7 @@ def generate_roc_curve(
 
 
 def generate_precision_recall_curve(
-    y_test,
-    classifier_names,
-    prediction_probs,
-    fig_dir,
-    reference,
-    verbose=True
+    y_test, classifier_names, prediction_probs, fig_dir, reference, verbose=True
 ):
     """
     Plot precision recall curves and report accompanying AUC.
@@ -89,13 +76,14 @@ def generate_precision_recall_curve(
             y=precision,
             label=f"{name} precision-recall curve (area = {pr_auc:.3f})",
             ci=None,
-            ax=ax
+            ax=ax,
         )
 
     ax.set(
         title=f"Precision Recall Curves for Random Forest Variants with {reference.capitalize()} Data",
         xlabel="Recall",
-        ylabel="Precision")
+        ylabel="Precision",
+    )
 
     fig.tight_layout()
 
