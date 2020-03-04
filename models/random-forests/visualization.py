@@ -31,6 +31,8 @@ def generate_roc_curve(
         sns.lineplot(
             x=fpr, y=tpr, label=f"{name} ROC curve (area = {auc:.3f})", ci=None, ax=ax
         )
+    if verbose:
+        print()
 
     ax.set(
         title=f"ROC Curves for Random Forest Variants with {reference.capitalize()} Data",
@@ -78,6 +80,9 @@ def generate_precision_recall_curve(
             ci=None,
             ax=ax,
         )
+
+    if verbose:
+        print()
 
     ax.set(
         title=f"Precision Recall Curves for Random Forest Variants with {reference.capitalize()} Data",

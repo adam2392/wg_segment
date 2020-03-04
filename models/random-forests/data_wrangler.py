@@ -1,12 +1,15 @@
 import collections
 import re
 
+import mne
 import numpy as np
 
 from natsort import natsorted
 from random import randrange
+from typing import Dict, List, Union
 
-def _get_monopolar_data(raw, ch_labels):
+
+def _get_monopolar_data(raw, y_labels):
     """
     Construct signal time series with original monopolar channel signals.
     Corresponding white matter/grey matter labels are also returned.
@@ -14,9 +17,9 @@ def _get_monopolar_data(raw, ch_labels):
     ch_names = raw.ch_names
 
     X = raw.get_data()
-    y = np.array([ch_labels[ch] for ch in ch_names])
+    y = np.array([y_labels[ch] for ch in ch_names])
 
-    return X, y
+    return X, y, ch_names
 
 
 def _find_bipolar_reference(ch_names):
@@ -66,7 +69,7 @@ def _find_bipolar_reference(ch_names):
 
 
 def _get_bipolar_data(
-    raw, ch_labels, anode, cathode, monopolar=[], include_monopolar=True
+    raw, y_labels, anode, cathode, monopolar=[], include_monopolar=False
 ):
     """
     Construct signal time series by subtracting adjacent channel signals.
@@ -78,18 +81,20 @@ def _get_bipolar_data(
     mono_data = raw.get_data(monopolar) if len(monopolar) else None
 
     X = anode_data - cathode_data
-    y = np.array([ch_labels[ch] for ch in anode])
+    y = np.array([y_labels[ch] for ch in anode])
+    ch_names = anode
 
-    if mono_data is not None and include_monopolar:
+    if include_monopolar and mono_data is not None:
         X = np.append(X, mono_data, axis=0)
 
-        mono_labels = np.array([ch_labels[ch] for ch in monopolar])
-        y = np.append(y, mono_labels)
+        monopolar_labels = np.array([y_labels[ch] for ch in monopolar])
+        y = np.append(y, monopolar_labels)
+        ch_names += monopolar
 
-    return X, y
+    return X, y, ch_names
 
 
-def _get_averaged_data(raw: mne.io.Raw, ch_labels: Dict, by_electrode=False):
+def _get_centered_data(raw: mne.io.Raw, y_labels: Dict, by_electrode=False):
     """
     Construct signal time series by subtracting mean signal for each electrode.
     Corresponding white matter/grey matter labels are also returned.
@@ -103,13 +108,14 @@ def _get_averaged_data(raw: mne.io.Raw, ch_labels: Dict, by_electrode=False):
         raw = raw.set_eeg_reference(ref_channels="average")
 
         X = raw.get_data()
-        y = np.array([ch_labels[ch] for ch in ch_names])
+        y = np.array([y_labels[ch] for ch in ch_names])
+
     else:
-        ch_names = natsorted(ch_labels.keys())
+        sorted_y_labels = natsorted(y_labels.keys())
 
         # get all unique electrodes
         elec_names = []
-        for x in ch_names:
+        for x in sorted_y_labels:
 
             elec_name = re.sub("[0-9]", "", x)
 
@@ -118,14 +124,19 @@ def _get_averaged_data(raw: mne.io.Raw, ch_labels: Dict, by_electrode=False):
 
         # get the channel numbers for each electrode
         elec_to_channels = collections.defaultdict(list)
-        for x in ch_names:
+        for x in sorted_y_labels:
             elec, num = re.match("^([A-Za-z]+[']?)([0-9]+)$", x).groups()
             elec_to_channels[elec].append(elec + str(num))
 
+        # Get channel data by electrode and mean subtract them
+        ch_names = []
         for elec in elec_to_channels:
             chans_list = elec_to_channels[elec]
 
-            labels = [ch_labels[ch] for ch in chans_list]
+            # Add channel names to ch_names
+            ch_names += list(chans_list.keys())
+
+            labels = [y_labels[ch] for ch in chans_list]
             labels = np.array(labels)
 
             # Subtract out average signal
@@ -140,15 +151,112 @@ def _get_averaged_data(raw: mne.io.Raw, ch_labels: Dict, by_electrode=False):
                 X = np.append(X, centered_data, axis=0)
                 y = np.append(y, labels)
 
-    return X, y
+    return X, y, ch_names
+
+
+def _get_channel_labels(elec_descrip, ch_names):
+    # Get binary class labels for each channel
+    ch_labels = {}
+    for i in range(len(elec_descrip["status_description"])):
+        name = elec_descrip["name"][i]
+        status = elec_descrip["status"][i]
+        descrip = elec_descrip["status_description"][i]
+
+        if name not in ch_names:
+            continue
+
+        if status == "bad" and descrip == "white matter":
+            ch_labels[name] = 1
+        elif name in ch_names:
+            ch_labels[name] = 0
+
+    return ch_labels
+
+
+def _get_neighbors_of_channel(elec_to_chans: Dict, n_neighbors: int):
+    """
+    Return dictionary of channels mapped to its neighbors, including itself.
+    
+    Parameters
+    ----------
+        elecs_to_chans: Dict[str: Dict[str: tuple(np.ndarray, np.ndarray)]]
+            Dictionary of channels and tuple of signal data and label grouped
+            by electrode.
+
+        n_neighbors: int
+            Number of neighbors to get on either side of each channel, e.g.
+            if n_neighbors = 1, then for L6 we will consider L5, L7 its
+            neighbors.
+
+    Returns
+    -------
+        chan_to_neighbors: Dict[str: List[str]]
+            Mapping of channels to list of neighboring channel names.
+    """
+    chan_to_neighbors = collections.defaultdict(list)
+
+    for elec in elec_to_chans:
+        chans_dict = elec_to_chans[elec]
+        max_ch_num = max(chans_dict.keys())
+
+        for ch_num in chans_dict:
+            min_ = max(1, ch_num - n_neighbors)
+            max_ = min(max_ch_num, ch_num + n_neighbors)
+
+            neighbors = [
+                elec + str(i) for i in range(min_, max_ + 1) if i in chans_dict
+            ]
+            chan_to_neighbors[elec + str(ch_num)] = neighbors
+
+    return chan_to_neighbors
+
+
+def _group_neighbors(
+    X: np.ndarray,
+    y: np.ndarray,
+    ch_names: List[str],
+    n_neighbors: int
+):
+    # Sort channels with data
+    chan_to_data = dict(zip(ch_names, zip(X, y)))
+    sorted_chs = natsorted(chan_to_data.items(), key=lambda x: x[0])
+    sorted_chs = dict(sorted_chs)
+
+    # Group channels by electrode to get neighbors
+    elec_to_chans = collections.defaultdict(dict)
+    for name, data in sorted_chs.items():
+        elec, num = re.match("^([A-Za-z]+[']?)([0-9]+)$", name).groups()
+        num = int(num)
+        elec_to_chans[elec][num] = data
+
+    chan_to_neighbors = _get_neighbors_of_channel(elec_to_chans, n_neighbors)
+
+    chan_to_neighbor_data = collections.defaultdict(list)
+    for chan, neighbors in chan_to_neighbors.items():
+        neighbor_data = np.array([X for ch, (X, _) in sorted_chs.items() if ch in neighbors])
+
+        # Missing a neighbor!
+        if not neighbor_data.shape[0] == 2 * n_neighbors + 1:
+            continue
+
+        ylabel = sorted_chs[chan][1]
+        chan_to_neighbor_data[chan] = (neighbor_data, ylabel)
+
+    X_neighbors = np.array([data for data, _ in chan_to_neighbor_data.values()])
+    y_neighbors = np.array([label for _, label in chan_to_neighbor_data.values()])
+    ch_names_neighbors = list(chan_to_neighbor_data.keys())
+    
+    return X_neighbors, y_neighbors, ch_names_neighbors
 
 
 def get_data_from_raw(
     raw: mne.io.Raw,
+    ch_pos: Dict,
     elec_descrip: Dict,
     window_size_seconds: int = 10,
-    strided: bool = True,
     reference: str = "monopolar",
+    n_neighbors: int = 0,
+    strided: bool = True,
     *args,
     **kwargs,
 ):
@@ -157,23 +265,13 @@ def get_data_from_raw(
     from Raw object.
     """
     ch_names = raw.ch_names
-    reference = reference.lower()
     n_samples = int(window_size_seconds * raw.info["sfreq"])
 
-    # Get binary class labels for each channel
-    ch_labels = {}
-    for i in range(len(elec_descrip["status_description"])):
-        name = elec_descrip["name"][i]
-        status = elec_descrip["status"][i]
-        descrip = elec_descrip["status_description"][i]
+    ch_descrips = _get_channel_labels(elec_descrip, ch_names)
 
-        if status == "bad" and descrip == "white matter":
-            ch_labels[name] = 1
-        elif name in ch_names:
-            ch_labels[name] = 0
-
+    reference = reference.lower()
     if reference == "monopolar":
-        X, y = _get_monopolar_data(raw, ch_labels)
+        X, y, ch_names = _get_monopolar_data(raw, ch_descrips)
 
     elif reference == "bipolar":
         include_monopolar = True
@@ -181,17 +279,23 @@ def get_data_from_raw(
             include_monopolar = kwargs["include_monopolar"]
 
         anode, cathode, mono = _find_bipolar_reference(ch_names)
-        X, y = _get_bipolar_data(raw, ch_labels, anode, cathode, mono, include_monopolar)
+        X, y, ch_names = _get_bipolar_data(
+            raw, ch_descrips, anode, cathode, mono, include_monopolar
+        )
 
-    elif reference == "averaged":
+    elif reference == "mean-subtracted":
         by_electrode = False
         if "by_electrode" in kwargs:
             by_electrode = kwargs["by_electrode"]
 
-        X, y = _get_averaged_data(raw, ch_labels, by_electrode)
+        X, y, ch_names = _get_centered_data(raw, ch_descrips, by_electrode)
 
     else:
         raise ValueError(f"Reference type {reference} not recognized")
+
+    if n_neighbors > 0:
+        # TODO: Makes a 3D np.ndarry -- not compatible w RF -- how to handle?
+        X, y, ch_names = _group_neighbors(X, y, ch_names, n_neighbors)
 
     # If strided, construct each sample with random windows of each channel,
     # otherwise just use the same window for all channels
@@ -213,6 +317,4 @@ def get_data_from_raw(
 
         X = windows[np.arange(len(start)), start]
 
-    print(f"Data dimensions - X.shape {X.shape}, y.shape {y.shape}")
-
-    return X, y
+    return X, y, ch_names

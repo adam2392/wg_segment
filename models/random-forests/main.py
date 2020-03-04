@@ -36,9 +36,6 @@ from visualization import (
 )
 
 
-# sns.set_context("paper", font_scale=1.5)
-
-
 def load_elecs_data(elecfile: Union[str, Path]):
     """
     Load each brain image scan as a NiBabel image object.
@@ -153,15 +150,21 @@ def train_classifiers(
         clf = None
 
         if name in ["rf", "random forest", "standard random forest"]:
-            clf = RandomForestClassifier(n_estimators=500)
+            clf = RandomForestClassifier(
+                n_estimators=500,
+                random_state=0
+            )
 
-        elif name in ["rerf", "random project random forest"]:
-            clf = rerfClassifier(n_estimators=500)
+        elif name in ["sporf"]:
+            clf = rerfClassifier(
+                n_estimators=500, random_state=0
+            )
 
-        elif name in ["srerf", "sporf", "structured rerf"]:
+        elif name in ["morf", "structured rerf"]:
             clf = rerfClassifier(
                 projection_matrix="S-RerF",
                 n_estimators=500,
+                random_state=0,
                 image_height=1,
                 image_width=n_samples,
                 patch_height_max=1,
@@ -237,7 +240,7 @@ def evaluate_classifiers(
 
 
 if __name__ == "__main__":
-    np.random.seed(2)
+    np.random.seed(0)
 
     bids_root = "/workspaces/ChesterHuynh/research/data/bids_layout_data/"
     # bids_root = "/Users/ChesterHuynh/research/data/bids_layout_data/"
@@ -282,24 +285,35 @@ if __name__ == "__main__":
     raw = raw.set_montage(montage)
 
     # Data processing
-    window_sizes = [5, 10, 15]  # in seconds
-    references = ["averaged", "bipolar", "monopolar"]
+    window_sizes = [5, 10]  # in seconds
+    references = [
+        "mean-subtracted",
+        "bipolar",
+        "monopolar"
+    ]
 
     for window_size in window_sizes:
         for reference in references:
-            X, y = get_data_from_raw(
+            X, y, _ = get_data_from_raw(
                 raw,
+                ch_pos,
                 elec_descrip,
                 window_size_seconds=window_size,
-                strided=True,
+                n_neighbors=0,
                 reference=reference,
+                strided=False,
                 by_electrode=False,
-                include_monopolar=False,
+                include_monopolar=False
             )
 
+            # print(f"shapes: {X.shape}, {y.shape}")
+
             # Split dataset into training set and test set
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.35)
-            classifier_names = ["Random Forest", "RerF", "SPORF"]
+            print(f"Time window: {window_size} sec, reference: {reference}")
+            print("------------------------------------------------------")
+
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3)
+            classifier_names = ["Random Forest", "SPORF", "MORF"]
             predictions, prediction_probs = evaluate_classifiers(
                 X_train,
                 y_train,
