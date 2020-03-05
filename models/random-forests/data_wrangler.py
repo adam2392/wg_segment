@@ -6,6 +6,7 @@ import numpy as np
 
 from natsort import natsorted
 from random import randrange
+from scipy.spatial import distance_matrix
 from typing import Dict, List, Union
 
 
@@ -173,20 +174,20 @@ def _get_channel_labels(elec_descrip, ch_names):
     return ch_labels
 
 
-def _get_neighbors_of_channel(elec_to_chans: Dict, n_neighbors: int):
+def _get_neighbors_of_channel(elec_to_chans: Dict, ch_pos, n_neighbors: int):
     """
     Return dictionary of channels mapped to its neighbors, including itself.
     
     Parameters
     ----------
-        elecs_to_chans: Dict[str: Dict[str: tuple(np.ndarray, np.ndarray)]]
+        elec_to_chans: Dict[str: Dict[str: tuple(np.ndarray, np.ndarray)]]
             Dictionary of channels and tuple of signal data and label grouped
             by electrode.
 
+        ch_pos: Dict[str: np.ndarray]]
+
         n_neighbors: int
-            Number of neighbors to get on either side of each channel, e.g.
-            if n_neighbors = 1, then for L6 we will consider L5, L7 its
-            neighbors.
+            Number of neighbors to get for each channel.
 
     Returns
     -------
@@ -195,27 +196,22 @@ def _get_neighbors_of_channel(elec_to_chans: Dict, n_neighbors: int):
     """
     chan_to_neighbors = collections.defaultdict(list)
 
-    for elec in elec_to_chans:
-        chans_dict = elec_to_chans[elec]
-        max_ch_num = max(chans_dict.keys())
+    ch_names = list(ch_pos.keys())
+    coords = list(ch_pos.values())
+    dist_mat = distance_matrix(coords, coords)
 
-        for ch_num in chans_dict:
-            min_ = max(1, ch_num - n_neighbors)
-            max_ = min(max_ch_num, ch_num + n_neighbors)
+    for i, name in enumerate(ch_pos):
+        dists = dist_mat[i]
 
-            neighbors = [
-                elec + str(i) for i in range(min_, max_ + 1) if i in chans_dict
-            ]
-            chan_to_neighbors[elec + str(ch_num)] = neighbors
+        # Dists will include the channel itself, so we get n_negihbors+1 channels
+        closest = np.argsort(dists)[: n_neighbors + 1]
+        chan_to_neighbors[name] = [ch_names[closest[i]] for i in range(len(closest))]
 
     return chan_to_neighbors
 
 
 def _group_neighbors(
-    X: np.ndarray,
-    y: np.ndarray,
-    ch_names: List[str],
-    n_neighbors: int
+    X: np.ndarray, y: np.ndarray, ch_names: List[str], ch_pos: Dict, n_neighbors: int
 ):
     # Sort channels with data
     chan_to_data = dict(zip(ch_names, zip(X, y)))
@@ -229,14 +225,16 @@ def _group_neighbors(
         num = int(num)
         elec_to_chans[elec][num] = data
 
-    chan_to_neighbors = _get_neighbors_of_channel(elec_to_chans, n_neighbors)
+    chan_to_neighbors = _get_neighbors_of_channel(elec_to_chans, ch_pos, n_neighbors)
 
     chan_to_neighbor_data = collections.defaultdict(list)
     for chan, neighbors in chan_to_neighbors.items():
-        neighbor_data = np.array([X for ch, (X, _) in sorted_chs.items() if ch in neighbors])
+        neighbor_data = np.array(
+            [X for ch, (X, _) in sorted_chs.items() if ch in neighbors]
+        )
 
         # Missing a neighbor!
-        if not neighbor_data.shape[0] == 2 * n_neighbors + 1:
+        if not neighbor_data.shape[0] == n_neighbors + 1:
             continue
 
         ylabel = sorted_chs[chan][1]
@@ -245,7 +243,7 @@ def _group_neighbors(
     X_neighbors = np.array([data for data, _ in chan_to_neighbor_data.values()])
     y_neighbors = np.array([label for _, label in chan_to_neighbor_data.values()])
     ch_names_neighbors = list(chan_to_neighbor_data.keys())
-    
+
     return X_neighbors, y_neighbors, ch_names_neighbors
 
 
@@ -274,9 +272,9 @@ def get_data_from_raw(
         X, y, ch_names = _get_monopolar_data(raw, ch_descrips)
 
     elif reference == "bipolar":
-        include_monopolar = True
-        if "include_monopolar" in kwargs:
-            include_monopolar = kwargs["include_monopolar"]
+        include_monopolar = (
+            kwargs["include_monopolar"] if "include_monopolar" in kwargs else True
+        )
 
         anode, cathode, mono = _find_bipolar_reference(ch_names)
         X, y, ch_names = _get_bipolar_data(
@@ -284,18 +282,11 @@ def get_data_from_raw(
         )
 
     elif reference == "mean-subtracted":
-        by_electrode = False
-        if "by_electrode" in kwargs:
-            by_electrode = kwargs["by_electrode"]
-
+        by_electrode = kwargs["by_electrode"] if "by_electrode" in kwargs else False
         X, y, ch_names = _get_centered_data(raw, ch_descrips, by_electrode)
 
     else:
         raise ValueError(f"Reference type {reference} not recognized")
-
-    if n_neighbors > 0:
-        # TODO: Makes a 3D np.ndarry -- not compatible w RF -- how to handle?
-        X, y, ch_names = _group_neighbors(X, y, ch_names, n_neighbors)
 
     # If strided, construct each sample with random windows of each channel,
     # otherwise just use the same window for all channels
@@ -316,5 +307,10 @@ def get_data_from_raw(
         )
 
         X = windows[np.arange(len(start)), start]
+
+    if n_neighbors > 0:
+        X, y, ch_names = _group_neighbors(X, y, ch_names, ch_pos, n_neighbors)
+
+    print(f"Data shapes: X = {X.shape}, y = {y.shape}")
 
     return X, y, ch_names

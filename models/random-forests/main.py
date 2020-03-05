@@ -6,6 +6,7 @@ import sys
 import numpy as np
 import mne
 
+from joblib import dump, load
 from mne import io
 from mpl_toolkits.mplot3d import Axes3D
 from natsort import natsorted
@@ -39,13 +40,11 @@ from visualization import (
 def load_elecs_data(elecfile: Union[str, Path]):
     """
     Load each brain image scan as a NiBabel image object.
-
     Parameters
     ----------
         elecfile: Union[str, Path]
             Space-delimited text file of contact labels and contact
             coordinates in mm space.
-
     Returns
     -------
         elecinitfile: dict(label: coord)
@@ -131,6 +130,23 @@ def make_seeg_montage_edf(subject: str, edf_fpath: str, elecs_fpath: str):
     return raw, montage
 
 
+def _drop_non_wm_bad_channels(raw, elec_descriptions):
+    ch_names = raw.ch_names
+
+    bad_chs = []
+    for i in range(len(elec_descriptions["status_description"])):
+        name = elec_descriptions["name"][i]
+        status = elec_descriptions["status"][i]
+        descrip = elec_descriptions["status_description"][i]
+
+        if (status == "bad") and (descrip != "white matter"):
+            bad_chs.append(name)
+
+    raw.drop_channels(bad_chs)
+
+    return raw
+
+
 def train_classifiers(
     X_train: np.ndarray,
     y_train: np.ndarray,
@@ -145,37 +161,40 @@ def train_classifiers(
     clfs = []
     n_samples = int(kwargs["window_size"] * kwargs["sfreq"])
 
+    n_channels, *dims = X_train.shape
+    X_vectorized = X_train.reshape(n_channels, np.prod(dims))
+    if len(dims) > 1:
+        n_elecs = dims[0]
+    else:
+        n_elecs = 1
+
     for clfname in classifier_names:
         name = clfname.lower()
         clf = None
 
         if name in ["rf", "random forest", "standard random forest"]:
-            clf = RandomForestClassifier(
-                n_estimators=500,
-                random_state=0
-            )
+            clf = RandomForestClassifier(random_state=1)
 
         elif name in ["sporf"]:
-            clf = rerfClassifier(
-                n_estimators=500, random_state=0
-            )
+            clf = rerfClassifier(random_state=1)
 
         elif name in ["morf", "structured rerf"]:
             clf = rerfClassifier(
                 projection_matrix="S-RerF",
-                n_estimators=500,
-                random_state=0,
-                image_height=1,
+                random_state=1,
+                image_height=n_elecs,
                 image_width=n_samples,
                 patch_height_max=1,
                 patch_height_min=1,
             )
+        else:
+            raise ValueError(f"Classifier name {name} not recognized")
 
         if clf is not None:
             clfs.append(clf)
 
-    for clf in clfs:
-        clf.fit(X_train, y_train)
+    for name, clf in zip(classifier_names, clfs):
+        clf.fit(X_vectorized, y_train)
 
     fitted_clfs = dict(zip(classifier_names, clfs))
 
@@ -201,9 +220,11 @@ def predict_classifiers(
         print(f"Zero classifier accuracy: {accuracy_score(y_test, zero_pred)}")
 
     for name, clf in classifiers.items():
+        n_channels, *dims = X_test.shape
+        X_vectorized = X_test.reshape(n_channels, np.prod(dims))
 
-        ypred = clf.predict(X_test)
-        proba = clf.predict_proba(X_test)
+        ypred = clf.predict(X_vectorized)
+        proba = clf.predict_proba(X_vectorized)
 
         predictions.append(ypred)
         prediction_probs.append(proba)
@@ -223,6 +244,8 @@ def evaluate_classifiers(
     classifier_names: List[str],
     window_size=10,
     sfreq=2000,
+    *args,
+    **kwargs,
 ):
     """
     Wrapper method that calls train and predict. Evaluates
@@ -236,36 +259,56 @@ def evaluate_classifiers(
         X_test, y_test, fitted_clfs, verbose=True
     )
 
+    persist = kwargs["persist"] if "persist" in kwargs else True
+
+    if persist:
+        persist_dir = kwargs["persist_dir"] if "persist_dir" in kwargs else None
+        if not persist_dir:
+            raise KeyError("No file path specified for persisting classifiers")
+
+        if not os.path.exists(persist_dir):
+            os.makedirs(persist_dir)
+
+        for name, clf in fitted_clfs.items():
+            persist_path = os.path.join(persist_dir, f"{name}.joblib")
+            dump(clf, persist_path)
+
     return predictions, prediction_probs
 
 
 if __name__ == "__main__":
-    np.random.seed(0)
+    np.random.seed(1)
 
-    bids_root = "/workspaces/ChesterHuynh/research/data/bids_layout_data/"
-    # bids_root = "/Users/ChesterHuynh/research/data/bids_layout_data/"
     patid = "la03"
     ses = "interictal"
     task = "monitor"
     acq = "seeg"
     run = "01"
 
+    # bids_root = "/Users/ChesterHuynh/research/data/bids_layout_data/"
+    bids_root = "/workspaces/ChesterHuynh/research/data/bids_layout_data/"
+
     sourcedata = os.path.join(bids_root, "sourcedata", patid)
     derivatives = os.path.join(bids_root, "derivatives", "freesurfer", patid)
 
     pat_dir = os.path.join(bids_root, f"sub-{patid}")
     derivatives_meta_dir = os.path.join(derivatives, f"ses-{ses}", "ieeg")
-    elec_meta_dir = os.path.join(bids_root, f"sub-{patid}", f"ses-{ses}", "ieeg")
 
-    edf_dir = os.path.join(sourcedata, acq, "edf")
-    fif_dir = os.path.join(sourcedata, acq, "fif")
+    elec_meta_dir = os.path.join(bids_root, f"sub-{patid}", f"ses-{ses}", "ieeg")
     elecs_dir = os.path.join(derivatives, "elecs")
 
     # Get relevant file paths
     elec_layout_fpath = file_utils._get_pt_electrode_layout(sourcedata, patid)
 
-    edf_fpath = os.path.join(edf_dir, f"{patid}_inter.edf")
+    # Get channel positions
     elec_fpath = os.path.join(elecs_dir, f"{patid}_elecxyz.txt")
+    ch_pos = load_elecs_data(elec_fpath)
+
+    # # Get .edf file and use to set montage
+    # edf_dir = os.path.join(sourcedata, acq, "edf")
+    # edf_fpath = os.path.join(edf_dir, f"{patid}_inter.edf")
+    # raw, montage = make_seeg_montage_edf(patid, edf_fpath, elec_fpath)
+    # raw = raw.set_montage(montage)
 
     elec_descrip_fname = make_bids_basename(
         subject=patid,
@@ -276,20 +319,33 @@ if __name__ == "__main__":
         suffix="channels.tsv",
     )
 
+    eeg_data = make_bids_basename(
+        subject=patid,
+        session=ses,
+        task=task,
+        acquisition=acq,
+        run=run,
+        suffix="ieeg.vhdr",
+    )
+
+    # Read channel descriptions
     elec_descrip_fpath = os.path.join(elec_meta_dir, elec_descrip_fname)
+    elec_descriptions = _from_tsv(elec_descrip_fpath)
 
-    ch_pos = load_elecs_data(elec_fpath)
-    elec_descrip = _from_tsv(elec_descrip_fpath)
+    # Get raw object
+    extra_params = dict(preload=True)
+    raw = read_raw_bids(eeg_data, bids_root, extra_params=extra_params)
 
-    raw, montage = make_seeg_montage_edf(patid, edf_fpath, elec_fpath)
-    raw = raw.set_montage(montage)
+    # Drop non-wm channels and non-seeg channels
+    raw = _drop_non_wm_bad_channels(raw, elec_descriptions)
+    raw.pick_types(seeg=True, exclude=[])
 
     # Data processing
-    window_sizes = [5, 10]  # in seconds
+    window_sizes = [5, 10, 15]  # in seconds
     references = [
         "mean-subtracted",
-        "bipolar",
-        "monopolar"
+        # "bipolar",
+        "monopolar",
     ]
 
     for window_size in window_sizes:
@@ -297,20 +353,20 @@ if __name__ == "__main__":
             X, y, _ = get_data_from_raw(
                 raw,
                 ch_pos,
-                elec_descrip,
+                elec_descriptions,
                 window_size_seconds=window_size,
                 n_neighbors=0,
                 reference=reference,
                 strided=False,
                 by_electrode=False,
-                include_monopolar=False
+                include_monopolar=False,
             )
-
-            # print(f"shapes: {X.shape}, {y.shape}")
 
             # Split dataset into training set and test set
             print(f"Time window: {window_size} sec, reference: {reference}")
             print("------------------------------------------------------")
+
+            results_dir = f"/workspaces/ChesterHuynh/research/seeg localization/results/{patid}/{window_size}sec/"
 
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3)
             classifier_names = ["Random Forest", "SPORF", "MORF"]
@@ -322,9 +378,11 @@ if __name__ == "__main__":
                 classifier_names,
                 window_size=window_size,
                 sfreq=raw.info["sfreq"],
+                persist=False,
+                # persist_dir=results_dir
             )
 
-            fig_dir = f"/workspaces/ChesterHuynh/research/seeg localization/figs/{window_size}sec/"
+            fig_dir = f"/workspaces/ChesterHuynh/research/seeg localization/figs/{patid}/{window_size}sec/"
 
             classifier_names = ["Zero"] + classifier_names
 
